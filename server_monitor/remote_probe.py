@@ -114,10 +114,38 @@ def processes(uid):
     return result
 
 
+def process_pss_gib(pid, proc_root='/proc'):
+    for name in ('smaps_rollup', 'smaps'):
+        try:
+            with (Path(proc_root) / str(pid) / name).open() as stream:
+                values = [int(line.split()[1]) for line in stream if line.startswith('Pss:')]
+            if values:
+                return sum(values) / 1024**2
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, IndexError):
+            return None
+    return None
+
+
+def user_resource_usage(rows, uid, cores, memory_total_gib):
+    own = [row for row in rows if row.get('uid') == uid]
+    cpu = sum(row['cpu_percent'] or 0 for row in own)
+    memory = sum(row['pss_gib'] if row.get('pss_gib') is not None else row['rss_gib'] for row in own)
+    estimated = sum(row.get('pss_gib') is None and row['rss_gib'] > 0 for row in own)
+    return {'user_cpu_percent': cpu / cores if cores else None,
+            'user_cpu_equivalents': cpu / 100,
+            'user_memory_gib': memory,
+            'user_memory_rss_gib': sum(row['rss_gib'] for row in own),
+            'user_memory_estimated_processes': estimated,
+            'user_memory_percent': 100 * memory / memory_total_gib if memory_total_gib else None}
+
+
 def collect(sample_seconds=1.0, scope='mine'):
     if scope not in ('mine', 'all'):
         raise ValueError('scope must be mine or all')
-    uid = os.geteuid() if scope == 'mine' else None
+    login_uid = os.geteuid()
+    uid = login_uid if scope == 'mine' else None
     start_cpu = cpu_snapshot()
     before = processes(uid)
     start = time.monotonic()
@@ -159,14 +187,19 @@ def collect(sample_seconds=1.0, scope='mine'):
     cores = end_cpu[3]
     # MemAvailable is the kernel estimate including reclaimable cache.
     available = mem.get('MemAvailable')
+    memory_total_gib = mem['MemTotal'] / 1024**2
+    for row in rows:
+        if row['uid'] == login_uid:
+            row['pss_gib'] = process_pss_gib(row['pid']) if row['rss_gib'] else 0.0
     return {'sampled_at': datetime.now(timezone.utc).isoformat(), 'hostname': os.uname().nodename,
-            'user': pwd.getpwuid(os.geteuid()).pw_name, 'scope': scope,
+            'user': pwd.getpwuid(login_uid).pw_name, 'scope': scope,
             'visibility_note': '仅包含当前账号有权读取的进程；系统可能限制其他用户的详情。', 'sample_seconds': round(elapsed, 3),
             'logical_cpus': cores, 'cpu_idle_percent': idle, 'cpu_iowait_percent': iowait,
             'idle_cpu_equivalents': cores * idle / 100 if idle is not None else None,
-            'load_1_5_15': list(os.getloadavg()), 'memory_total_gib': mem['MemTotal'] / 1024**2,
+            'load_1_5_15': list(os.getloadavg()), 'memory_total_gib': memory_total_gib,
             'memory_available_gib': available / 1024**2 if available is not None else None,
             'swap_free_gib': mem.get('SwapFree', 0) / 1024**2, 'processes': rows,
+            **user_resource_usage(rows, login_uid, cores, memory_total_gib),
             **disk_snapshot()}
 
 

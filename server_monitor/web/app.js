@@ -45,6 +45,16 @@ async function api(path, body) {
   } finally {clearTimeout(timeout);}
 }
 function node(tag, className, text) { const element = document.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element; }
+function updateResourceTrack(track, freePercent, ownPercent) {
+  const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
+  const free = clamp(freePercent), own = clamp(ownPercent);
+  track.querySelector('.free-bar').style.width = free + '%';
+  track.querySelector('.mine-bar').style.width = Math.min(own, 100 - free) + '%';
+  const text = '空闲 / 可用 ' + fmt(freePercent) + '% · 我的占用 ' + fmt(ownPercent) + '%';
+  track.title = text + (free + own > 100 ? '；条形在整机 100% 范围内显示，数值保留原始合计。' : '');
+  track.setAttribute('role', 'img');
+  track.setAttribute('aria-label', text);
+}
 function statusOf(server) {
   if (!server.enabled) return {name:'已停用', style:'', dot:''};
   if (server.status === 'login') return {name:'待登录', style:'', dot:'amber'};
@@ -66,10 +76,16 @@ function createCard(server) {
   actions.append(badge,edit); heading.append(identity,actions);
   const cpu = node('div','metric'), cpuTop = node('div','metric-top');
   cpuTop.append(node('span','','CPU 空闲'),node('strong','cpu-value','—'));
-  const cpuTrack = node('div','track');cpuTrack.append(node('span','cpu-bar'));cpu.append(cpuTop,cpuTrack);
+  const cpuTrack = node('div','track resource-track cpu-track');cpuTrack.append(node('span','free-bar cpu-bar'),node('span','mine-bar'));
+  const cpuOwn = node('div','metric-own');cpuOwn.append(node('span','','我的占用'),node('strong','cpu-own-value','—'));
+  cpuOwn.title = '当前登录账号全部进程的 CPU 占用，按整台服务器的逻辑核数换算。';
+  cpu.append(cpuTop,cpuTrack,cpuOwn);
   const mem = node('div','metric'), memTop = node('div','metric-top');
   memTop.append(node('span','','可用内存'),node('strong','memory-value','—'));
-  const memTrack = node('div','track memory-track'); memTrack.append(node('span','memory-bar'));mem.append(memTop,memTrack);
+  const memTrack = node('div','track resource-track memory-track'); memTrack.append(node('span','free-bar memory-bar'),node('span','mine-bar'));
+  const memOwn = node('div','metric-own');memOwn.append(node('span','','我的占用'),node('strong','memory-own-value','—'));
+  memOwn.title = '当前登录账号全部进程的内存合计，共享页按进程比例分摊（PSS）。';
+  mem.append(memTop,memTrack,memOwn);
   const storage = node('button','storage-link','等待磁盘采样');
   storage.type = 'button';
   storage.addEventListener('click', event => {event.stopPropagation(); selectServer(server.id); $('disk-section').scrollIntoView({behavior:'smooth',block:'start'});});
@@ -92,8 +108,15 @@ function updateCard(server) {
   el.querySelector('.cpu-value').textContent=data ? fmt(data.cpu_idle_percent)+'% · '+fmt(data.idle_cpu_equivalents)+' / '+fmt(data.logical_cpus,0)+' 核' : '—';
   el.querySelector('.memory-value').textContent=data ? fmt(data.memory_available_gib)+' / '+fmt(data.memory_total_gib)+' GiB' : '—';
   const bar=el.querySelector('.cpu-bar'), idle=data?.cpu_idle_percent || 0;
-  bar.style.width=Math.max(0,Math.min(100,idle))+'%';bar.classList.toggle('critical',!!data&&idle<10);bar.classList.toggle('low',!!data&&idle>=10&&idle<25);
-  el.querySelector('.memory-bar').style.width=(data&&data.memory_total_gib ? Math.max(0,Math.min(100,100*data.memory_available_gib/data.memory_total_gib)) : 0)+'%';
+  bar.classList.toggle('critical',!!data&&idle<10);bar.classList.toggle('low',!!data&&idle>=10&&idle<25);
+  updateResourceTrack(el.querySelector('.cpu-track'),data?.cpu_idle_percent,data?.user_cpu_percent);
+  const availableMemory=data?.memory_available_gib;
+  const memoryPercent=availableMemory!==null&&availableMemory!==undefined&&data?.memory_total_gib ? 100*availableMemory/data.memory_total_gib : null;
+  updateResourceTrack(el.querySelector('.memory-track'),memoryPercent,data?.user_memory_percent);
+  el.querySelector('.cpu-own-value').textContent=data&&data.user_cpu_percent!==undefined ? fmt(data.user_cpu_percent)+'% · '+fmt(data.user_cpu_equivalents)+' 核' : '—';
+  const estimatedMemory=Number(data?.user_memory_estimated_processes)>0;
+  el.querySelector('.memory-own-value').textContent=data&&data.user_memory_gib!==undefined ? (estimatedMemory?'≈ ':'')+fmt(data.user_memory_percent)+'% · '+fmt(data.user_memory_gib)+' GiB' : '—';
+  el.querySelector('.memory-own-value').parentElement.title='当前登录账号全部进程的内存合计，共享页按进程比例分摊（PSS）。'+(estimatedMemory?' '+data.user_memory_estimated_processes+' 个进程无法读取 PSS，使用 RSS 估算。':'');
   el.querySelector('.storage-link').textContent=data?.disk_error?'磁盘采样异常 · 查看详情':data?.disks?data.disks.length+' 个挂载 · 查看容量与路径':'等待磁盘采样';
   const err=el.querySelector('.card-error');err.hidden=!['error','login'].includes(server.status);err.textContent=friendly(server.error);err.title=server.error;
   const mode=state.settings.scope==='mine'?'我的':'全部';
