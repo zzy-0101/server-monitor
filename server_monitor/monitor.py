@@ -34,6 +34,8 @@ def inventory(selection=None):
 def probe(server, timeout=45, scope='mine', password=None):
     base = {k: server[k] for k in ('id', 'alias', 'host', 'port', 'user') if k in server}
     remote = 'LC_ALL=C ' + shlex.quote(server.get('python', 'python3')) + ' - --scope ' + scope
+    if server.get('cpu_budget_path'):
+        remote += ' --cpu-budget-path ' + shlex.quote(server['cpu_budget_path'])
     try:
         result = run_ssh(server, remote, (ROOT / 'remote_probe.py').read_text(encoding='utf-8'), timeout, password)
         if result.returncode:

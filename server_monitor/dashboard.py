@@ -80,7 +80,8 @@ def validate_server(raw, sid=None, allow_missing_user=False):
     return {'id': sid or uuid.uuid4().hex[:12], 'name': string('name', host, 80) or host,
             'alias': string('alias', '', 80), 'host': host, 'port': port, 'user': user,
             'auth': auth, 'identity_file': string('identity_file', DEFAULT_KEY, 500),
-            'python': python, 'enabled': bool(raw.get('enabled', True)),
+            'python': python, 'cpu_budget_path': string('cpu_budget_path', '', 1000),
+            'enabled': bool(raw.get('enabled', True)),
             'remember_user': remember_user, 'remember_password': remember_password,
             'credential_id': credential_id}
 

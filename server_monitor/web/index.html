@@ -21,6 +21,7 @@
       <div class="summary-grid">
         <div class="summary-card"><span class="summary-label">在线服务器</span><div class="summary-value"><span id="sum-online">—</span><small id="sum-total">/ 7</small></div><span class="summary-note" id="sum-status">正在连接</span></div>
         <div class="summary-card"><span class="summary-label">空闲逻辑核</span><div class="summary-value" id="sum-cpu">—</div><span class="summary-note">在线服务器合计</span></div>
+        <div class="summary-card"><span class="summary-label">可分配逻辑核</span><div class="summary-value" id="sum-free-core">—</div><span class="summary-note" id="sum-free-core-note">free_core · 等待账本</span></div>
         <div class="summary-card"><span class="summary-label">可用内存</span><div class="summary-value"><span id="sum-memory">—</span><small>GiB</small></div></div>
         <div class="summary-card" title="状态为 R，或采样期间有 CPU 占用的进程"><span class="summary-label" id="sum-process-label">运行中的进程</span><div class="summary-value" id="sum-process">—</div><span class="summary-note" id="sum-process-note">当前登录账号</span></div>
       </div>
@@ -54,7 +55,7 @@
     <label class="field">认证方式<select id="field-auth" aria-label="认证方式"><option value="key">SSH 密钥</option><option value="password">密码</option><option value="auto">自动：先密钥，再密码</option></select></label>
     <label class="field" id="identity-field">本机私钥路径<input id="field-identity" aria-label="本机私钥路径" placeholder="~/.ssh/id_ed25519" autocomplete="off"><span class="field-help">留空使用默认密钥</span></label>
     <div class="field" id="password-field" hidden><label for="field-password">登录密码</label><div class="password-input"><input id="field-password" aria-label="登录密码" type="password" autocomplete="new-password" placeholder="请输入登录密码"><button type="button" id="toggle-password" aria-label="显示密码">显示</button></div><div class="remember-options"><label class="checkbox-field"><input type="checkbox" id="field-remember-password">记住密码</label><span class="field-help" id="password-help">本次有效</span></div></div>
-    <details class="advanced"><summary>更多设置</summary><label class="field">远端 Python 解释器<input id="field-python" aria-label="远端 Python 解释器" value="python3" placeholder="python3 或解释器绝对路径"></label><label class="checkbox-field"><input type="checkbox" id="field-clear-password">清除已保存的密码</label></details>
+    <details class="advanced"><summary>更多设置</summary><label class="field">远端 Python 解释器<input id="field-python" aria-label="远端 Python 解释器" value="python3" placeholder="python3 或解释器绝对路径"></label><label class="field">CPU 预留账本（可选）<input id="field-cpu-budget" aria-label="CPU 预留账本" placeholder="~/project/runs/resource_budget_v1/budget.json"><span class="field-help">填写远端共享 CPU 账本的 budget.json 路径。</span></label><label class="checkbox-field"><input type="checkbox" id="field-clear-password">清除已保存的密码</label></details>
     <label class="checkbox-field enabled-field"><input type="checkbox" id="field-enabled" checked>启用此服务器的监控</label>
     <p class="form-error" id="form-error" role="alert" hidden></p>
     <div class="dialog-footer"><button type="button" class="button danger" id="delete-server" hidden>删除服务器</button><span class="spacer"></span><button type="button" class="button" id="cancel-dialog">取消</button><button type="submit" class="button primary" id="save-server">保存并连接</button></div>

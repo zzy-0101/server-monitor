@@ -79,7 +79,10 @@ function createCard(server) {
   const cpuTrack = node('div','track resource-track cpu-track');cpuTrack.append(node('span','free-bar cpu-bar'),node('span','mine-bar'));
   const cpuOwn = node('div','metric-own');cpuOwn.append(node('span','','我的占用'),node('strong','cpu-own-value','—'));
   cpuOwn.title = '当前登录账号全部进程的 CPU 占用，按整台服务器的逻辑核数换算。';
-  cpu.append(cpuTop,cpuTrack,cpuOwn);
+  const budget = node('div','cpu-budget'), budgetTop = node('div','metric-top');
+  budgetTop.append(node('span','','可分配 free_core'),node('strong','budget-value','—'));
+  budget.append(budgetTop,node('div','budget-note'));
+  cpu.append(cpuTop,cpuTrack,cpuOwn,budget);
   const mem = node('div','metric'), memTop = node('div','metric-top');
   memTop.append(node('span','','可用内存'),node('strong','memory-value','—'));
   const memTrack = node('div','track resource-track memory-track'); memTrack.append(node('span','free-bar memory-bar'),node('span','mine-bar'));
@@ -117,6 +120,13 @@ function updateCard(server) {
   const estimatedMemory=Number(data?.user_memory_estimated_processes)>0;
   el.querySelector('.memory-own-value').textContent=data&&data.user_memory_gib!==undefined ? (estimatedMemory?'≈ ':'')+fmt(data.user_memory_percent)+'% · '+fmt(data.user_memory_gib)+' GiB' : '—';
   el.querySelector('.memory-own-value').parentElement.title='当前登录账号全部进程的内存合计，共享页按进程比例分摊（PSS）。'+(estimatedMemory?' '+data.user_memory_estimated_processes+' 个进程无法读取 PSS，使用 RSS 估算。':'');
+  const budget=data?.cpu_budget, budgetBox=el.querySelector('.cpu-budget');
+  budgetBox.hidden=!server.cpu_budget_path&&(!budget||budget.status==='not_configured');
+  const budgetReady=budget?.status==='ready'&&Number.isInteger(budget.free_core);
+  el.querySelector('.budget-value').textContent=budgetReady?(server.status==='online'?'':'旧值 ')+fmt(budget.free_core,0)+' / '+fmt(budget.logical_cpus,0)+' 核':'—';
+  const budgetStatus={not_configured:'未接入预留账本',warming_up:'账本采样准备中',updating:'预留记录更新中',stale:'账本已过期',restarted:'账本等待重启后更新',missing:'未找到预留账本',unreadable:'账本读取权限不足',invalid:'账本数据不可用'};
+  el.querySelector('.budget-note').textContent=budgetReady?'已预留 '+fmt(budget.committed_cores,0)+' 核 · 未计入负载 '+fmt(budget.unreflected_reserved_cores,0)+' 核':budgetStatus[budget?.status]||'等待账本采样';
+  budgetBox.title=budgetReady?'账本窗口空闲 '+fmt(budget.measured_idle_cores)+' 核；已预留 '+fmt(budget.committed_cores,0)+' 核；尚未计入负载的预留 '+fmt(budget.unreflected_reserved_cores,0)+' 核。窗口 '+fmt(budget.window_seconds)+' 秒，账本更新 '+new Date(budget.updated_unix*1000).toLocaleTimeString('zh-CN',{hour12:false})+'。':budget?.error||'在编辑连接的“更多设置”中填写远端 CPU 预留账本路径。';
   el.querySelector('.storage-link').textContent=data?.disk_error?'磁盘采样异常 · 查看详情':data?.disks?data.disks.length+' 个挂载 · 查看容量与路径':'等待磁盘采样';
   const err=el.querySelector('.card-error');err.hidden=!['error','login'].includes(server.status);err.textContent=friendly(server.error);err.title=server.error;
   const mode=state.settings.scope==='mine'?'我的':'全部';
@@ -136,6 +146,9 @@ function renderSummary() {
   const login=enabled.filter(s=>s.status==='login').length;
   $('sum-status').textContent=failed?failed+' 台连接失败':login?login+' 台待登录':busy?busy+' 台更新中':enabled.length?'已更新':'未启用服务器';
   $('sum-cpu').textContent=online.length?fmt(online.reduce((n,s)=>n+(s.data.idle_cpu_equivalents||0),0)):'—';
+  const budgetRows=online.filter(s=>s.data.cpu_budget?.status==='ready'&&Number.isInteger(s.data.cpu_budget.free_core));
+  $('sum-free-core').textContent=budgetRows.length?fmt(budgetRows.reduce((n,s)=>n+s.data.cpu_budget.free_core,0),0):'—';
+  $('sum-free-core-note').textContent=budgetRows.length?'free_core · 有效 '+budgetRows.length+' / '+enabled.length+' 台':enabled.some(s=>s.cpu_budget_path)?'暂无有效的预留账本':'未接入预留账本';
   const memoryRows=online.filter(s=>s.data.memory_available_gib!==null);
   $('sum-memory').textContent=memoryRows.length?fmt(memoryRows.reduce((n,s)=>n+s.data.memory_available_gib,0),0):'—';
   $('sum-process').textContent=online.length?fmt(online.reduce((n,s)=>n+(s.scope_pending?0:s.data.processes.filter(isActiveProcess).length),0),0):'—';
@@ -236,9 +249,9 @@ async function poll() {
 async function mutate(path,body,message){try{await api(path,body);if(message)toast(message);await poll();}catch(error){toast(error.message,true);}}
 function passwordHelp(){const previous=state.servers.find(s=>s.id===$('field-id').value);const same=previous&&['host','port','user'].every(k=>String(previous[k])===$('field-'+k).value);$('field-password').placeholder=same&&previous.has_password?'已填写，留空保留':'请输入登录密码';$('password-help').textContent=$('field-remember-password').checked?'保存到'+(state.password_storage||'系统凭据存储'):'本次有效';}
 function authFields(){const auth=$('field-auth').value;$('identity-field').hidden=auth==='password';$('password-field').hidden=auth==='key';passwordHelp();}
-function editServer(sid){const server=state.servers.find(s=>s.id===sid);$('server-form').reset();$('field-id').value=server?.id||'';$('dialog-title').textContent=server?'编辑服务器':'添加服务器';for(const [field,key,defaultValue]of [['name','name',''],['host','host',''],['port','port',22],['user','user',''],['auth','auth','password'],['identity','identity_file',''],['python','python','python3']])$('field-'+field).value=server?.[key]??defaultValue;
+function editServer(sid){const server=state.servers.find(s=>s.id===sid);$('server-form').reset();$('field-id').value=server?.id||'';$('dialog-title').textContent=server?'编辑服务器':'添加服务器';for(const [field,key,defaultValue]of [['name','name',''],['host','host',''],['port','port',22],['user','user',''],['auth','auth','password'],['identity','identity_file',''],['python','python','python3'],['cpu-budget','cpu_budget_path','']])$('field-'+field).value=server?.[key]??defaultValue;
   $('field-remember-user').checked=server?.remember_user??true;$('field-remember-password').checked=server?.remember_password??false;$('field-enabled').checked=server?.enabled??true;$('field-password').value='';$('field-password').type='password';$('toggle-password').textContent='显示';$('form-error').hidden=true;$('delete-server').hidden=!server;authFields();$('server-dialog').showModal();}
-$('server-form').addEventListener('submit',async event=>{event.preventDefault();const raw={};for(const [field,key]of [['id','id'],['name','name'],['host','host'],['port','port'],['user','user'],['auth','auth'],['identity','identity_file'],['python','python'],['password','password']])raw[key]=$('field-'+field).value;if(!raw.id)delete raw.id;const previous=state.servers.find(s=>s.id===raw.id);raw.alias=previous?.alias||'';raw.enabled=$('field-enabled').checked;raw.clear_password=$('field-clear-password').checked;$('save-server').disabled=true;
+$('server-form').addEventListener('submit',async event=>{event.preventDefault();const raw={};for(const [field,key]of [['id','id'],['name','name'],['host','host'],['port','port'],['user','user'],['auth','auth'],['identity','identity_file'],['python','python'],['cpu-budget','cpu_budget_path'],['password','password']])raw[key]=$('field-'+field).value;if(!raw.id)delete raw.id;const previous=state.servers.find(s=>s.id===raw.id);raw.alias=previous?.alias||'';raw.enabled=$('field-enabled').checked;raw.clear_password=$('field-clear-password').checked;$('save-server').disabled=true;
   raw.remember_user=$('field-remember-user').checked;raw.remember_password=$('field-remember-password').checked;
   try{await api('server',raw);$('server-dialog').close();toast('已保存');await poll();}catch(error){$('form-error').hidden=false;$('form-error').textContent=error.message;}finally{$('save-server').disabled=false;}
 });

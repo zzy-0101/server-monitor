@@ -1,5 +1,6 @@
 """Linux read-only probe; sent over SSH stdin, requires Python 3.6+."""
 import json
+import math
 import os
 import pwd
 import re
@@ -141,7 +142,65 @@ def user_resource_usage(rows, uid, cores, memory_total_gib):
             'user_memory_percent': 100 * memory / memory_total_gib if memory_total_gib else None}
 
 
-def collect(sample_seconds=1.0, scope='mine'):
+def cpu_budget_snapshot(path, now=None, boot_id=None):
+    answer = {'status': 'not_configured', 'free_core': None, 'path': path or ''}
+    if not path:
+        return answer
+    try:
+        state = json.loads(Path(path).expanduser().read_text())
+        headroom = state['headroom']
+        reservations = state['reservations']
+        if not isinstance(headroom, dict) or not isinstance(reservations, dict):
+            raise ValueError('CPU 账本格式不正确。')
+
+        def number(value, integer=False):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0
+                    or integer and value != int(value)):
+                raise ValueError('CPU 账本包含无效的核数或时间。')
+            return int(value) if integer else float(value)
+
+        clock = time.time() if now is None else now
+        updated = number(state['time_unix'])
+        if updated > clock + 5:
+            raise ValueError('CPU 账本时间晚于服务器当前时间。')
+        age = max(0.0, clock - updated)
+        logical = number(headroom['logical_cpus'], True)
+        idle = number(headroom['measured_idle_cores'])
+        committed = number(headroom['committed_cores'], True)
+        pending = number(headroom['unreflected_reserved_cores'], True)
+        free = number(headroom['free_cores'], True)
+        if not logical or idle > logical or free != max(0, min(logical - committed, math.floor(idle) - pending)):
+            raise ValueError('CPU 账本的 free_cores 与预留核数不一致。')
+        reserved = sum(number(row['threads'], True) for row in reservations.values())
+        window = headroom.get('window_seconds')
+        if window is not None and number(window) <= 0:
+            raise ValueError('CPU 账本采样窗口不正确。')
+        current_boot = boot_id if boot_id is not None else Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        answer.update(logical_cpus=logical, measured_idle_cores=idle, committed_cores=committed,
+                      unreflected_reserved_cores=pending, window_seconds=window,
+                      age_seconds=age, updated_unix=updated, reservation_count=len(reservations),
+                      last_free_core=free)
+        if state['boot'] != current_boot:
+            answer.update(status='restarted', error='服务器重启后，CPU 账本尚未更新。')
+        elif age > 6:
+            answer.update(status='stale', error='CPU 账本超过 6 秒未更新。')
+        elif window is None:
+            answer.update(status='warming_up', error='CPU 账本正在积累采样窗口。')
+        elif reserved != committed:
+            answer.update(status='updating', error='CPU 账本正在更新预留记录。')
+        else:
+            answer.update(status='ready', free_core=free)
+    except FileNotFoundError:
+        answer.update(status='missing', error='未找到 CPU 预留账本。')
+    except PermissionError:
+        answer.update(status='unreadable', error='当前账号无法读取 CPU 预留账本。')
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        answer.update(status='invalid', error='无法读取 CPU 预留账本：' + str(exc))
+    return answer
+
+
+def collect(sample_seconds=1.0, scope='mine', cpu_budget_path=''):
     if scope not in ('mine', 'all'):
         raise ValueError('scope must be mine or all')
     login_uid = os.geteuid()
@@ -191,6 +250,8 @@ def collect(sample_seconds=1.0, scope='mine'):
     for row in rows:
         if row['uid'] == login_uid:
             row['pss_gib'] = process_pss_gib(row['pid']) if row['rss_gib'] else 0.0
+    disks = disk_snapshot()
+    budget = cpu_budget_snapshot(cpu_budget_path)
     return {'sampled_at': datetime.now(timezone.utc).isoformat(), 'hostname': os.uname().nodename,
             'user': pwd.getpwuid(login_uid).pw_name, 'scope': scope,
             'visibility_note': '仅包含当前账号有权读取的进程；系统可能限制其他用户的详情。', 'sample_seconds': round(elapsed, 3),
@@ -199,13 +260,15 @@ def collect(sample_seconds=1.0, scope='mine'):
             'load_1_5_15': list(os.getloadavg()), 'memory_total_gib': memory_total_gib,
             'memory_available_gib': available / 1024**2 if available is not None else None,
             'swap_free_gib': mem.get('SwapFree', 0) / 1024**2, 'processes': rows,
+            'free_core': budget['free_core'], 'cpu_budget': budget,
             **user_resource_usage(rows, login_uid, cores, memory_total_gib),
-            **disk_snapshot()}
+            **disks}
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--scope', choices=('mine', 'all'), default='mine')
+    parser.add_argument('--cpu-budget-path', default='')
     args = parser.parse_args()
-    print(json.dumps(collect(scope=args.scope), ensure_ascii=True))
+    print(json.dumps(collect(scope=args.scope, cpu_budget_path=args.cpu_budget_path), ensure_ascii=True))
